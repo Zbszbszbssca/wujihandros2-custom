@@ -113,9 +113,6 @@ bool WujiHandDriverNode::connect_hardware() {
     // Disable thread safety check for multi-threaded access
     hand_->disable_thread_safe_check();
 
-    // Enable all joints
-    hand_->write<wujihandcpp::data::joint::Enabled>(true);
-
     // Read handedness (0 = right, 1 = left)
     auto handedness_value = hand_->read<wujihandcpp::data::hand::Handedness>();
     handedness_ = (handedness_value == 0) ? "right" : "left";
@@ -143,12 +140,24 @@ bool WujiHandDriverNode::connect_hardware() {
     for (size_t f = 0; f < NUM_FINGERS; ++f) {
       for (size_t j = 0; j < JOINTS_PER_FINGER; ++j) {
         auto pos = hand_->finger(f).joint(j).get<wujihandcpp::data::joint::ActualPosition>();
+        if (!std::isfinite(pos)) {
+          throw std::runtime_error("Invalid initial joint position from WujiHand");
+        }
         initial_positions[f][j] = pos;
         last_target_positions_[to_flat_index(f, j)] = pos;
       }
     }
 
-    // Send initial target position to start realtime communication
+    // Seed the realtime controller with the measured pose before enabling the
+    // joints.  Enabling first leaves a short window where the controller may
+    // still contain its default target, which can make the hand move at
+    // startup before the first ROS command arrives.
+    controller_->set_joint_target_position(initial_positions);
+
+    // Enable only after every initial position has been read successfully and
+    // installed as the target.  Re-assert the same target after enabling in
+    // case the SDK resets its command cache during the state transition.
+    hand_->write<wujihandcpp::data::joint::Enabled>(true);
     controller_->set_joint_target_position(initial_positions);
 
     // Update ROS parameters with hardware info so other nodes can query them
